@@ -5548,11 +5548,13 @@ mv_rules(struct pf_ruleset *src, struct pf_ruleset *dst)
 {
 	struct pf_rule *r;
 
-	TAILQ_FOREACH(r, src->rules.active.ptr, entries)
+	RB_FOREACH(r, pf_ruletree, src->rules.active.ptr) {
 		dst->anchor->match++;
-	TAILQ_CONCAT(dst->rules.active.ptr, src->rules.active.ptr, entries);
+		RB_INSERT(pf_ruletree, dst->rules.active.ptr, r);
+	}
 	src->anchor->match = 0;
-	TAILQ_CONCAT(dst->rules.inactive.ptr, src->rules.inactive.ptr, entries);
+	RB_FOREACH(r, pf_ruletree, src->rules.inactive.ptr)
+		RB_INSERT(pf_ruletree, dst->rules.inactive.ptr, r);
 }
 
 void

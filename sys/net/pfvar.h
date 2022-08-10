@@ -506,7 +506,11 @@ struct pf_rule {
 
 	char			 overload_tblname[PF_TABLE_NAME_SIZE];
 
-	TAILQ_ENTRY(pf_rule)	 entries;
+	RB_ENTRY(pf_rule)	 entries;
+#define PF_USAGE_UNUSED		0
+#define PF_USAGE_USED		1
+#define PF_USAGE_DEFAULT	2
+	uint8_t			 usage;
 	struct pf_pool		 nat;
 	struct pf_pool		 rdr;
 	struct pf_pool		 route;
@@ -918,15 +922,15 @@ struct pfsync_state {
 	d += ntohl(s[1]);					\
 } while (0)
 
-TAILQ_HEAD(pf_rulequeue, pf_rule);
+RB_HEAD(pf_ruletree, pf_rule);
 
 struct pf_anchor;
 
 struct pf_ruleset {
 	struct {
-		struct pf_rulequeue	 queues[2];
+		struct pf_ruletree	 trees[2];
 		struct {
-			struct pf_rulequeue	*ptr;
+			struct pf_ruletree	*ptr;
 			u_int32_t		 rcount;
 			u_int32_t		 ticket;
 			int			 open;
@@ -937,6 +941,7 @@ struct pf_ruleset {
 	int			 tables;
 	int			 topen;
 };
+RB_PROTOTYPE(pf_ruletree, pf_rule, entries, pf_rule_compare)
 
 RB_HEAD(pf_anchor_global, pf_anchor);
 RB_HEAD(pf_anchor_node, pf_anchor);
@@ -1454,7 +1459,7 @@ struct pf_pktdelay {
 #define PFFRAG_FRENT_HIWAT	(NMBCLUSTERS / 16) /* Number of entries */
 #define PFFRAG_FRAG_HIWAT	(NMBCLUSTERS / 32) /* Number of packets */
 
-#define PFR_KTABLE_HIWAT	1000	/* Number of tables */
+#define PFR_KTABLE_HIWAT	50000	/* Number of tables */
 #define PFR_KENTRY_HIWAT	200000	/* Number of table entries */
 #define PFR_KENTRY_HIWAT_SMALL	100000	/* Number of entries for tiny hosts */
 
@@ -1713,7 +1718,7 @@ extern int			 pf_tbladdr_setup(struct pf_ruleset *,
 				    struct pf_addr_wrap *, int);
 extern void			 pf_tbladdr_remove(struct pf_addr_wrap *);
 extern void			 pf_tbladdr_copyout(struct pf_addr_wrap *);
-extern void			 pf_calc_skip_steps(struct pf_rulequeue *);
+extern void			 pf_calc_skip_steps(struct pf_ruletree *);
 extern void			 pf_purge_expired_src_nodes(void);
 extern void			 pf_purge_expired_states(u_int32_t);
 extern void			 pf_purge_expired_rules(void);
@@ -1744,7 +1749,7 @@ extern void			 pf_print_state(struct pf_state *);
 extern void			 pf_print_flags(u_int8_t);
 extern void			 pf_addrcpy(struct pf_addr *, struct pf_addr *,
 				    sa_family_t);
-void				 pf_rm_rule(struct pf_rulequeue *,
+void				 pf_rm_rule(struct pf_ruletree *,
 				    struct pf_rule *);
 void				 pf_purge_rule(struct pf_rule *);
 struct pf_divert		*pf_find_divert(struct mbuf *);

@@ -218,7 +218,7 @@ pfattach(int num)
 	pf_queues_inactive = &pf_queues[1];
 
 	/* default rule should never be garbage collected */
-	pf_default_rule.entries.tqe_prev = &pf_default_rule.entries.tqe_next;
+	pf_default_rule.usage = PF_USAGE_DEFAULT;
 	pf_default_rule.action = PF_PASS;
 	pf_default_rule.nr = (u_int32_t)-1;
 	pf_default_rule.rtableid = -1;
@@ -294,9 +294,9 @@ pf_rule_free(struct pf_rule *rule)
 }
 
 void
-pf_rm_rule(struct pf_rulequeue *rulequeue, struct pf_rule *rule)
+pf_rm_rule(struct pf_ruletree *ruletree, struct pf_rule *rule)
 {
-	if (rulequeue != NULL) {
+	if (ruletree != NULL) {
 		if (rule->states_cur == 0 && rule->src_nodes == 0) {
 			/*
 			 * XXX - we need to remove the table *before* detaching
@@ -311,13 +311,14 @@ pf_rm_rule(struct pf_rulequeue *rulequeue, struct pf_rule *rule)
 			if (rule->overload_tbl)
 				pfr_detach_table(rule->overload_tbl);
 		}
-		TAILQ_REMOVE(rulequeue, rule, entries);
-		rule->entries.tqe_prev = NULL;
+		RB_REMOVE(pf_ruletree, ruletree, rule);
+		rule->usage = PF_USAGE_UNUSED;
 		rule->nr = (u_int32_t)-1;
 	}
 
+	///XXX: here i am
 	if (rule->states_cur > 0 || rule->src_nodes > 0 ||
-	    rule->entries.tqe_prev != NULL)
+	    rule->usage != PF_USAGE_UNUSED)
 		return;
 	pf_tag_unref(rule->tag);
 	pf_tag_unref(rule->match_tag);
@@ -328,7 +329,7 @@ pf_rm_rule(struct pf_rulequeue *rulequeue, struct pf_rule *rule)
 	pfi_dynaddr_remove(&rule->rdr.addr);
 	pfi_dynaddr_remove(&rule->nat.addr);
 	pfi_dynaddr_remove(&rule->route.addr);
-	if (rulequeue == NULL) {
+	if (ruletree == NULL) {
 		pf_tbladdr_remove(&rule->src.addr);
 		pf_tbladdr_remove(&rule->dst.addr);
 		pf_tbladdr_remove(&rule->rdr.addr);
@@ -357,7 +358,7 @@ pf_purge_rule(struct pf_rule *rule)
 
 	pf_rm_rule(ruleset->rules.active.ptr, rule);
 	ruleset->rules.active.rcount--;
-	TAILQ_FOREACH(rule, ruleset->rules.active.ptr, entries)
+	RB_FOREACH(rule, pf_ruletree, ruleset->rules.active.ptr)
 		rule->nr = nr++;
 	ruleset->rules.active.ticket++;
 	pf_calc_skip_steps(ruleset->rules.active.ptr);
@@ -532,7 +533,7 @@ pf_begin_rules(u_int32_t *ticket, const char *anchor)
 
 	if ((rs = pf_find_or_create_ruleset(anchor)) == NULL)
 		return (EINVAL);
-	while ((rule = TAILQ_FIRST(rs->rules.inactive.ptr)) != NULL) {
+	while ((rule = RB_MIN(pf_ruletree, rs->rules.inactive.ptr)) != NULL) {
 		pf_rm_rule(rs->rules.inactive.ptr, rule);
 		rs->rules.inactive.rcount--;
 	}
@@ -551,7 +552,7 @@ pf_rollback_rules(u_int32_t ticket, char *anchor)
 	if (rs == NULL || !rs->rules.inactive.open ||
 	    rs->rules.inactive.ticket != ticket)
 		return;
-	while ((rule = TAILQ_FIRST(rs->rules.inactive.ptr)) != NULL) {
+	while ((rule = RB_MIN(pf_ruletree, rs->rules.inactive.ptr)) != NULL) {
 		pf_rm_rule(rs->rules.inactive.ptr, rule);
 		rs->rules.inactive.rcount--;
 	}
@@ -832,7 +833,7 @@ pf_commit_rules(u_int32_t ticket, char *anchor)
 {
 	struct pf_ruleset	*rs;
 	struct pf_rule		*rule;
-	struct pf_rulequeue	*old_rules;
+	struct pf_ruletree	*old_rules;
 	u_int32_t		 old_rcount;
 
 	/* Make sure any expired rules get removed from active rules first. */
@@ -860,7 +861,7 @@ pf_commit_rules(u_int32_t ticket, char *anchor)
 
 
 	/* Purge the old rule list. */
-	while ((rule = TAILQ_FIRST(old_rules)) != NULL)
+	while ((rule = RB_MIN(pf_ruletree, old_rules)) != NULL)
 		pf_rm_rule(old_rules, rule);
 	rs->rules.inactive.rcount = 0;
 	rs->rules.inactive.open = 0;
@@ -882,9 +883,8 @@ pf_calc_chksum(struct pf_ruleset *rs)
 	MD5Init(&ctx);
 
 	if (rs->rules.inactive.rcount) {
-		TAILQ_FOREACH(rule, rs->rules.inactive.ptr, entries) {
+		RB_FOREACH(rule, pf_ruletree, rs->rules.inactive.ptr)
 			pf_hash_rule(&ctx, rule);
-		}
 	}
 
 	MD5Final(digest, &ctx);
@@ -1341,7 +1341,7 @@ pfioctl(dev_t dev, u_long cmd, caddr_t addr, int flags, struct proc *p)
 	case DIOCADDRULE: {
 		struct pfioc_rule	*pr = (struct pfioc_rule *)addr;
 		struct pf_ruleset	*ruleset;
-		struct pf_rule		*rule, *tail;
+		struct pf_rule		*rule, *last;
 
 		rule = pool_get(&pf_rule_pl, PR_WAITOK|PR_LIMITFAIL|PR_ZERO);
 		if (rule == NULL) {
@@ -1402,10 +1402,9 @@ pfioctl(dev_t dev, u_long cmd, caddr_t addr, int flags, struct proc *p)
 		rule->cuid = p->p_ucred->cr_ruid;
 		rule->cpid = p->p_p->ps_pid;
 
-		tail = TAILQ_LAST(ruleset->rules.inactive.ptr,
-		    pf_rulequeue);
-		if (tail)
-			rule->nr = tail->nr + 1;
+		last = RB_MAX(pf_ruletree, ruleset->rules.inactive.ptr);
+		if (last)
+			rule->nr = last->nr + 1;
 		else
 			rule->nr = 0;
 
@@ -1442,8 +1441,8 @@ pfioctl(dev_t dev, u_long cmd, caddr_t addr, int flags, struct proc *p)
 			NET_UNLOCK();
 			goto fail;
 		}
-		TAILQ_INSERT_TAIL(ruleset->rules.inactive.ptr,
-		    rule, entries);
+		RB_INSERT(pf_ruletree, ruleset->rules.inactive.ptr, rule);
+		rule->usage = PF_USAGE_USED;
 		rule->ruleset = ruleset;
 		ruleset->rules.inactive.rcount++;
 		PF_UNLOCK();
@@ -1454,7 +1453,7 @@ pfioctl(dev_t dev, u_long cmd, caddr_t addr, int flags, struct proc *p)
 	case DIOCGETRULES: {
 		struct pfioc_rule	*pr = (struct pfioc_rule *)addr;
 		struct pf_ruleset	*ruleset;
-		struct pf_rule		*tail;
+		struct pf_rule		*last;
 
 		NET_LOCK();
 		PF_LOCK();
@@ -1466,9 +1465,9 @@ pfioctl(dev_t dev, u_long cmd, caddr_t addr, int flags, struct proc *p)
 			NET_UNLOCK();
 			goto fail;
 		}
-		tail = TAILQ_LAST(ruleset->rules.active.ptr, pf_rulequeue);
-		if (tail)
-			pr->nr = tail->nr + 1;
+		last = RB_MAX(pf_ruletree, ruleset->rules.active.ptr);
+		if (last)
+			pr->nr = last->nr + 1;
 		else
 			pr->nr = 0;
 		pr->ticket = ruleset->rules.active.ticket;
@@ -1499,9 +1498,8 @@ pfioctl(dev_t dev, u_long cmd, caddr_t addr, int flags, struct proc *p)
 			NET_UNLOCK();
 			goto fail;
 		}
-		rule = TAILQ_FIRST(ruleset->rules.active.ptr);
-		while ((rule != NULL) && (rule->nr != pr->nr))
-			rule = TAILQ_NEXT(rule, entries);
+		struct pf_rule find = { .nr = pr->nr };
+		rule = RB_FIND(pf_ruletree, ruleset->rules.active.ptr, &find);
 		if (rule == NULL) {
 			error = EBUSY;
 			PF_UNLOCK();
@@ -1676,14 +1674,17 @@ pfioctl(dev_t dev, u_long cmd, caddr_t addr, int flags, struct proc *p)
 		}
 
 		if (pcr->action == PF_CHANGE_ADD_HEAD)
-			oldrule = TAILQ_FIRST(ruleset->rules.active.ptr);
+			oldrule = RB_MIN(pf_ruletree,
+			    ruleset->rules.active.ptr);
 		else if (pcr->action == PF_CHANGE_ADD_TAIL)
-			oldrule = TAILQ_LAST(ruleset->rules.active.ptr,
-			    pf_rulequeue);
+			oldrule = RB_MAX(pf_ruletree,
+			    ruleset->rules.active.ptr);
 		else {
-			oldrule = TAILQ_FIRST(ruleset->rules.active.ptr);
+			oldrule = RB_MIN(pf_ruletree,
+			    ruleset->rules.active.ptr);
 			while ((oldrule != NULL) && (oldrule->nr != pcr->nr))
-				oldrule = TAILQ_NEXT(oldrule, entries);
+				oldrule = RB_NEXT(pf_ruletree,
+				    ruleset->rules.active.ptr, oldrule);
 			if (oldrule == NULL) {
 				if (newrule != NULL)
 					pf_rm_rule(NULL, newrule);
@@ -1698,23 +1699,14 @@ pfioctl(dev_t dev, u_long cmd, caddr_t addr, int flags, struct proc *p)
 			pf_rm_rule(ruleset->rules.active.ptr, oldrule);
 			ruleset->rules.active.rcount--;
 		} else {
-			if (oldrule == NULL)
-				TAILQ_INSERT_TAIL(
-				    ruleset->rules.active.ptr,
-				    newrule, entries);
-			else if (pcr->action == PF_CHANGE_ADD_HEAD ||
-			    pcr->action == PF_CHANGE_ADD_BEFORE)
-				TAILQ_INSERT_BEFORE(oldrule, newrule, entries);
-			else
-				TAILQ_INSERT_AFTER(
-				    ruleset->rules.active.ptr,
-				    oldrule, newrule, entries);
+			RB_INSERT(pf_ruletree,
+			    ruleset->rules.active.ptr, newrule);
 			ruleset->rules.active.rcount++;
 			newrule->ruleset = ruleset;
 		}
 
 		nr = 0;
-		TAILQ_FOREACH(oldrule, ruleset->rules.active.ptr, entries)
+		RB_FOREACH(oldrule, pf_ruletree, ruleset->rules.active.ptr)
 			oldrule->nr = nr++;
 
 		ruleset->rules.active.ticket++;

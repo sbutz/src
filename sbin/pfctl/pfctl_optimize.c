@@ -191,6 +191,7 @@ struct pf_rule_field {
     PF_RULE_FIELD(src_nodes,		DC),
     PF_RULE_FIELD(nr,			DC),
     PF_RULE_FIELD(entries,		DC),
+    PF_RULE_FIELD(usage,		DC),
     PF_RULE_FIELD(qid,			DC),
     PF_RULE_FIELD(pqid,			DC),
     PF_RULE_FIELD(anchor_relative,	DC),
@@ -268,9 +269,9 @@ pfctl_optimize_ruleset(struct pfctl *pf, struct pf_ruleset *rs)
 	struct superblock *block;
 	struct pf_opt_rule *por;
 	struct pf_rule *r;
-	struct pf_rulequeue *old_rules;
+	struct pf_ruletree *old_rules;
 
-	if (TAILQ_EMPTY(rs->rules.active.ptr))
+	if (RB_EMPTY(rs->rules.active.ptr))
 		return (0);
 
 	DEBUG("optimizing ruleset \"%s\"", rs->anchor->path);
@@ -286,8 +287,8 @@ pfctl_optimize_ruleset(struct pfctl *pf, struct pf_ruleset *rs)
 	 * XXX expanding the pf_opt_rule format throughout pfctl might allow
 	 * us to avoid all this copying.
 	 */
-	while ((r = TAILQ_FIRST(rs->rules.inactive.ptr)) != NULL) {
-		TAILQ_REMOVE(rs->rules.inactive.ptr, r, entries);
+	while ((r = RB_MIN(pf_ruletree, rs->rules.inactive.ptr)) != NULL) {
+		RB_REMOVE(pf_ruletree, rs->rules.inactive.ptr, r);
 		if ((por = calloc(1, sizeof(*por))) == NULL)
 			err(1, "calloc");
 		memcpy(&por->por_rule, r, sizeof(*r));
@@ -319,7 +320,7 @@ pfctl_optimize_ruleset(struct pfctl *pf, struct pf_ruleset *rs)
 			if ((r = calloc(1, sizeof(*r))) == NULL)
 				err(1, "calloc");
 			memcpy(r, &por->por_rule, sizeof(*r));
-			TAILQ_INSERT_TAIL(rs->rules.active.ptr, r, entries);
+			RB_INSERT(pf_ruletree, rs->rules.active.ptr, r);
 			pf_opt_table_unref(por->por_src_tbl);
 			pf_opt_table_unref(por->por_dst_tbl);
 			free(por);

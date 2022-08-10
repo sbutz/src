@@ -1790,21 +1790,21 @@ pf_print_flags(u_int8_t f)
 		addlog("W");
 }
 
-#define	PF_SET_SKIP_STEPS(i)					\
-	do {							\
-		while (head[i] != cur) {			\
-			head[i]->skip[i].ptr = cur;		\
-			head[i] = TAILQ_NEXT(head[i], entries);	\
-		}						\
+#define	PF_SET_SKIP_STEPS(i)						\
+	do {								\
+		while (head[i] != cur) {				\
+			head[i]->skip[i].ptr = cur;			\
+			head[i] = RB_NEXT(pf_ruletree, rules, head[i]);	\
+		}							\
 	} while (0)
 
 void
-pf_calc_skip_steps(struct pf_rulequeue *rules)
+pf_calc_skip_steps(struct pf_ruletree *rules)
 {
 	struct pf_rule *cur, *prev, *head[PF_SKIP_COUNT];
 	int i;
 
-	cur = TAILQ_FIRST(rules);
+	cur = RB_MIN(pf_ruletree, rules);
 	prev = cur;
 	for (i = 0; i < PF_SKIP_COUNT; ++i)
 		head[i] = cur;
@@ -1836,7 +1836,7 @@ pf_calc_skip_steps(struct pf_rulequeue *rules)
 			PF_SET_SKIP_STEPS(PF_SKIP_DST_PORT);
 
 		prev = cur;
-		cur = TAILQ_NEXT(cur, entries);
+		cur = RB_NEXT(pf_ruletree, rules, cur);
 	}
 	for (i = 0; i < PF_SKIP_COUNT; ++i)
 		PF_SET_SKIP_STEPS(i);
@@ -3606,8 +3606,9 @@ pf_match_rule(struct pf_test_ctx *ctx, struct pf_ruleset *ruleset)
 	struct pf_rule	*r;
 	struct pf_rule	*save_a;
 	struct pf_ruleset	*save_aruleset;
+	struct pf_ruletree *head = ruleset->rules.active.ptr;
 
-	r = TAILQ_FIRST(ruleset->rules.active.ptr);
+	r = RB_MIN(pf_ruletree, head);
 	while (r != NULL) {
 		r->evaluations++;
 		PF_TEST_ATTRIB(
@@ -3634,26 +3635,26 @@ pf_match_rule(struct pf_test_ctx *ctx, struct pf_ruleset *ruleset)
 		case PF_VPROTO_FRAGMENT:
 			/* tcp/udp only. port_op always 0 in other cases */
 			PF_TEST_ATTRIB((r->src.port_op || r->dst.port_op),
-				TAILQ_NEXT(r, entries));
+				RB_NEXT(pf_ruletree, head, r));
 			PF_TEST_ATTRIB((ctx->pd->proto == IPPROTO_TCP &&
 			    r->flagset),
-				TAILQ_NEXT(r, entries));
+				RB_NEXT(pf_ruletree, head, r));
 			/* icmp only. type/code always 0 in other cases */
 			PF_TEST_ATTRIB((r->type || r->code),
-				TAILQ_NEXT(r, entries));
+				RB_NEXT(pf_ruletree, head, r));
 			/* tcp/udp only. {uid|gid}.op always 0 in other cases */
 			PF_TEST_ATTRIB((r->gid.op || r->uid.op),
-				TAILQ_NEXT(r, entries));
+				RB_NEXT(pf_ruletree, head, r));
 			break;
 
 		case IPPROTO_TCP:
 			PF_TEST_ATTRIB(((r->flagset & ctx->th->th_flags) !=
 			    r->flags),
-				TAILQ_NEXT(r, entries));
+				RB_NEXT(pf_ruletree, head, r));
 			PF_TEST_ATTRIB((r->os_fingerprint != PF_OSFP_ANY &&
 			    !pf_osfp_match(pf_osfp_fingerprint(ctx->pd),
 			    r->os_fingerprint)),
-				TAILQ_NEXT(r, entries));
+				RB_NEXT(pf_ruletree, head, r));
 			/* FALLTHROUGH */
 
 		case IPPROTO_UDP:
@@ -3672,14 +3673,14 @@ pf_match_rule(struct pf_test_ctx *ctx, struct pf_ruleset *ruleset)
 			    pf_socket_lookup(ctx->pd), 1)) &&
 			    !pf_match_uid(r->uid.op, r->uid.uid[0],
 			    r->uid.uid[1], ctx->pd->lookup.uid)),
-				TAILQ_NEXT(r, entries));
+				RB_NEXT(pf_ruletree, head, r));
 			/* tcp/udp only. gid.op always 0 in other cases */
 			PF_TEST_ATTRIB((r->gid.op && (ctx->pd->lookup.done ||
 			    (ctx->pd->lookup.done =
 			    pf_socket_lookup(ctx->pd), 1)) &&
 			    !pf_match_gid(r->gid.op, r->gid.gid[0],
 			    r->gid.gid[1], ctx->pd->lookup.gid)),
-				TAILQ_NEXT(r, entries));
+				RB_NEXT(pf_ruletree, head, r));
 			break;
 
 		case IPPROTO_ICMP:
@@ -3687,16 +3688,16 @@ pf_match_rule(struct pf_test_ctx *ctx, struct pf_ruleset *ruleset)
 			/* icmp only. type always 0 in other cases */
 			PF_TEST_ATTRIB((r->type &&
 			    r->type != ctx->icmptype + 1),
-				TAILQ_NEXT(r, entries));
+				RB_NEXT(pf_ruletree, head, r));
 			/* icmp only. type always 0 in other cases */
 			PF_TEST_ATTRIB((r->code &&
 			    r->code != ctx->icmpcode + 1),
-				TAILQ_NEXT(r, entries));
+				RB_NEXT(pf_ruletree, head, r));
 			/* icmp only. don't create states on replies */
 			PF_TEST_ATTRIB((r->keep_state && !ctx->state_icmp &&
 			    (r->rule_flag & PFRULE_STATESLOPPY) == 0 &&
 			    ctx->icmp_dir != PF_IN),
-				TAILQ_NEXT(r, entries));
+				RB_NEXT(pf_ruletree, head, r));
 			break;
 
 		default:
@@ -3705,28 +3706,28 @@ pf_match_rule(struct pf_test_ctx *ctx, struct pf_ruleset *ruleset)
 
 		PF_TEST_ATTRIB((r->rule_flag & PFRULE_FRAGMENT &&
 		    ctx->pd->virtual_proto != PF_VPROTO_FRAGMENT),
-			TAILQ_NEXT(r, entries));
+			RB_NEXT(pf_ruletree, head, r));
 		PF_TEST_ATTRIB((r->tos && !(r->tos == ctx->pd->tos)),
-			TAILQ_NEXT(r, entries));
+			RB_NEXT(pf_ruletree, head, r));
 		PF_TEST_ATTRIB((r->prob &&
 		    r->prob <= arc4random_uniform(UINT_MAX - 1) + 1),
-			TAILQ_NEXT(r, entries));
+			RB_NEXT(pf_ruletree, head, r));
 		PF_TEST_ATTRIB((r->match_tag &&
 		    !pf_match_tag(ctx->pd->m, r, &ctx->tag)),
-			TAILQ_NEXT(r, entries));
+			RB_NEXT(pf_ruletree, head, r));
 		PF_TEST_ATTRIB((r->rcv_kif && pf_match_rcvif(ctx->pd->m, r) ==
 		    r->rcvifnot),
-			TAILQ_NEXT(r, entries));
+			RB_NEXT(pf_ruletree, head, r));
 		PF_TEST_ATTRIB((r->prio &&
 		    (r->prio == PF_PRIO_ZERO ? 0 : r->prio) !=
 		    ctx->pd->m->m_pkthdr.pf.prio),
-			TAILQ_NEXT(r, entries));
+			RB_NEXT(pf_ruletree, head, r));
 
 		/* must be last! */
 		if (r->pktrate.limit) {
 			pf_add_threshold(&r->pktrate);
 			PF_TEST_ATTRIB((pf_check_threshold(&r->pktrate)),
-				TAILQ_NEXT(r, entries));
+				RB_NEXT(pf_ruletree, head, r));
 		}
 
 		/* FALLTHROUGH */
@@ -3804,7 +3805,7 @@ pf_match_rule(struct pf_test_ctx *ctx, struct pf_ruleset *ruleset)
 			ctx->a = save_a;
 			ctx->aruleset = save_aruleset;
 		}
-		r = TAILQ_NEXT(r, entries);
+		r = RB_NEXT(pf_ruletree, head, r);
 	}
 
 	return (ctx->test_status);

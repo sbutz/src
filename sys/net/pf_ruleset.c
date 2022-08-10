@@ -87,7 +87,21 @@ struct pool	pf_anchor_pl;
 struct pf_anchor_global	 pf_anchors;
 struct pf_anchor	 pf_main_anchor;
 
+static __inline int pf_rule_compare(struct pf_rule *, struct pf_rule *);
 static __inline int pf_anchor_compare(struct pf_anchor *, struct pf_anchor *);
+
+RB_GENERATE(pf_ruletree, pf_rule, entries, pf_rule_compare);
+
+static __inline int
+pf_rule_compare(struct pf_rule *a, struct pf_rule *b)
+{
+	if (a->nr == b->nr)
+		return (0);
+	else if (a->nr > b->nr)
+		return (1);
+	else
+		return (-1);
+}
 
 RB_GENERATE(pf_anchor_global, pf_anchor, entry_global, pf_anchor_compare);
 RB_GENERATE(pf_anchor_node, pf_anchor, entry_node, pf_anchor_compare);
@@ -104,10 +118,10 @@ void
 pf_init_ruleset(struct pf_ruleset *ruleset)
 {
 	memset(ruleset, 0, sizeof(struct pf_ruleset));
-	TAILQ_INIT(&ruleset->rules.queues[0]);
-	TAILQ_INIT(&ruleset->rules.queues[1]);
-	ruleset->rules.active.ptr = &ruleset->rules.queues[0];
-	ruleset->rules.inactive.ptr = &ruleset->rules.queues[1];
+	RB_INIT(&ruleset->rules.trees[0]);
+	RB_INIT(&ruleset->rules.trees[1]);
+	ruleset->rules.active.ptr = &ruleset->rules.trees[0];
+	ruleset->rules.inactive.ptr = &ruleset->rules.trees[1];
 }
 
 struct pf_anchor *
@@ -300,8 +314,8 @@ pf_remove_if_empty_ruleset(struct pf_ruleset *ruleset)
 		    ruleset->anchor->refcnt > 0 || ruleset->tables > 0 ||
 		    ruleset->topen)
 			return;
-		if (!TAILQ_EMPTY(ruleset->rules.active.ptr) ||
-		    !TAILQ_EMPTY(ruleset->rules.inactive.ptr) ||
+		if (!RB_EMPTY(ruleset->rules.active.ptr) ||
+		    !RB_EMPTY(ruleset->rules.inactive.ptr) ||
 		    ruleset->rules.inactive.open)
 			return;
 		RB_REMOVE(pf_anchor_global, &pf_anchors, ruleset->anchor);
